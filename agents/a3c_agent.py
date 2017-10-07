@@ -37,7 +37,7 @@ class A3CAgent(object):
         # Epsilon schedule
         self.epsilon = [0.05, 0.2]
 
-    def build_model(self, reuse, dev, ntype):
+    def build_model(self, reuse, dev, ntype, max_to_keep):
         with tf.variable_scope(self.name) and tf.device(dev):
             if reuse:
                 tf.get_variable_scope().reuse_variables()
@@ -105,7 +105,7 @@ class A3CAgent(object):
             self.train_op = opt.apply_gradients(cliped_grad)
 
             self.summary_op = tf.summary.merge(self.summary)
-            self.saver = tf.train.Saver(max_to_keep=100)
+            self.saver = tf.train.Saver(max_to_keep=max_to_keep)
 
     def step(self, obs):
         """
@@ -259,5 +259,6 @@ class A3CAgent(object):
 
     def load_model(self, path):
         ckpt = tf.train.get_checkpoint_state(path)
+        assert ckpt and ckpt.model_checkpoint_path, 'chpt path %s not found' % path
         self.saver.restore(self.sess, ckpt.model_checkpoint_path)
         return int(ckpt.model_checkpoint_path.split('-')[-1])

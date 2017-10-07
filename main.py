@@ -2,11 +2,12 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import os
 import sys
 import time
 import importlib
 import threading
+from os.path import join as joinpath
+from utils import makedir, get_output_folder
 
 from pysc2 import maps
 from pysc2.env import available_actions_printer
@@ -22,32 +23,43 @@ COUNTER = 0
 LOCK = threading.Lock()
 
 FLAGS = flags.FLAGS
-flags.DEFINE_bool("training", True, "Whether to train agents.")
-flags.DEFINE_bool("continuation", False, "Continuously training.")
-flags.DEFINE_float("learning_rate", 5e-4, "Learning rate for training.")
-flags.DEFINE_float("discount", 0.99, "Discount rate for future rewards.")
-flags.DEFINE_integer("max_steps", 1e5, "Total steps for training.")
-flags.DEFINE_integer("snapshot_step", 1e3, "Step for snapshot.")
-flags.DEFINE_string("snapshot_path", "./snapshot/", "Path for snapshot.")
-flags.DEFINE_string("log_path", "./log/", "Path for log.")
-flags.DEFINE_string("device", "0", "Device for training.")
 
+
+# path
+flags.DEFINE_string("output_path", "./out", "Path for snapshot.")
+
+# resources setup
+flags.DEFINE_string("device", "0,1", "Device for training.") # default two GPUs
+flags.DEFINE_integer("parallel", 8, "How many instances to run in parallel.")
+
+# game setup
 flags.DEFINE_string("map", "MoveToBeacon", "Name of a map to use.")
-flags.DEFINE_bool("render", True, "Whether to render with pygame.")
+flags.DEFINE_enum("agent_race", "T", sc2_env.races.keys(), "Agent's race.")
+flags.DEFINE_enum("bot_race", None, sc2_env.races.keys(), "Bot's race.")
+flags.DEFINE_enum("difficulty", None, sc2_env.difficulties.keys(), "Bot's strength.")
+
 flags.DEFINE_integer("screen_resolution", 64, "Resolution for screen feature layers.")
 flags.DEFINE_integer("minimap_resolution", 64, "Resolution for minimap feature layers.")
 flags.DEFINE_integer("step_mul", 8, "Game steps per agent step.")
 
+# model setup
 flags.DEFINE_string("agent", "agents.a3c_agent.A3CAgent", "Which agent to run.")
 flags.DEFINE_string("net", "fcn", "atari or fcn.")
-flags.DEFINE_enum("agent_race", "T", sc2_env.races.keys(), "Agent's race.")
-flags.DEFINE_enum("bot_race", None, sc2_env.races.keys(), "Bot's race.")
-flags.DEFINE_enum("difficulty", None, sc2_env.difficulties.keys(), "Bot's strength.")
-flags.DEFINE_integer("max_agent_steps", 60, "Total agent steps.")
 
+# training setup
+flags.DEFINE_bool("training", True, "Whether to train agents.")
+flags.DEFINE_bool("continuation", False, "Continuously training.")
+flags.DEFINE_float("learning_rate", 5e-4, "Learning rate for training.")
+flags.DEFINE_float("discount", 0.99, "Discount rate for future rewards.")
+flags.DEFINE_integer("max_steps", 1e5, "Total steps for training.") # max episode for all agents
+flags.DEFINE_integer("max_agent_steps", 60, "Total agent steps.") # max step per episode
+flags.DEFINE_integer("snapshot_step", 1e3, "Step for snapshot.") # save snapshot per snapshot_step episode
+flags.DEFINE_integer("max_to_keep", 10, "max snapshot to keep")
+
+# debugging
 flags.DEFINE_bool("profile", False, "Whether to turn on code profiling.")
 flags.DEFINE_bool("trace", False, "Whether to trace the code execution.")
-flags.DEFINE_integer("parallel", 16, "How many instances to run in parallel.")
+flags.DEFINE_bool("render", True, "Whether to render with pygame.")
 flags.DEFINE_bool("save_replay", False, "Whether to save a replay at the end.")
 
 FLAGS(sys.argv)
@@ -61,12 +73,14 @@ else:
     MAX_AGENT_STEPS = 1e5
     DEVICE = ['/cpu:0']
 
-LOG = FLAGS.log_path + FLAGS.map + '/' + FLAGS.net
-SNAPSHOT = FLAGS.snapshot_path + FLAGS.map + '/' + FLAGS.net
-if not os.path.exists(LOG):
-    os.makedirs(LOG)
-if not os.path.exists(SNAPSHOT):
-    os.makedirs(SNAPSHOT)
+# setup all pathes
+output_dir = get_output_folder(FLAGS.output_path, '%s-%s' % (FLAGS.map, FLAGS.net))
+LOG = joinpath(output_dir, 'summary')
+SNAPSHOT = joinpath(output_dir, 'checkpoint')
+
+makedir(output_dir)
+makedir(LOG)
+makedir(SNAPSHOT)
 
 
 def run_thread(agent, map_name, visualize):
@@ -150,7 +164,7 @@ def _main(unused_argv):
     for i in range(PARALLEL):
         agent = agent_cls(FLAGS.training, FLAGS.minimap_resolution, FLAGS.screen_resolution)
         # TODO why assigning to different device?
-        agent.build_model(i > 0, DEVICE[i % len(DEVICE)], FLAGS.net)
+        agent.build_model(i > 0, DEVICE[i % len(DEVICE)], FLAGS.net, FLAGS.max_to_keep)
         agents.append(agent)
 
     config = tf.ConfigProto(allow_soft_placement=True)
