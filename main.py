@@ -27,6 +27,7 @@ FLAGS = flags.FLAGS
 
 # path
 flags.DEFINE_string("output_path", "./out", "Path for snapshot.")
+flags.DEFINE_string("model_load_path", "./out", "Path for loading saved models")
 
 # resources setup
 flags.DEFINE_string("device", "0,1", "Device for training.") # default two GPUs
@@ -59,7 +60,7 @@ flags.DEFINE_integer("max_to_keep", 10, "max snapshot to keep")
 # debugging
 flags.DEFINE_bool("profile", False, "Whether to turn on code profiling.")
 flags.DEFINE_bool("trace", False, "Whether to trace the code execution.")
-flags.DEFINE_bool("render", True, "Whether to render with pygame.")
+flags.DEFINE_bool("render", False, "Whether to render with pygame.")
 flags.DEFINE_bool("save_replay", False, "Whether to save a replay at the end.")
 
 FLAGS(sys.argv)

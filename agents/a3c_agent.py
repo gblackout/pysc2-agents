@@ -168,7 +168,18 @@ class A3CAgent(object):
         return actions.FunctionCall(act_id, act_args)
 
     def update(self, rbs, disc, lr, cter):
-
+        """
+        
+        :param rbs:
+            replay_buffer
+        :param disc: 
+            discount
+        :param lr: 
+            learning_rate
+        :param cter: 
+            counter
+        
+        """
         # Compute R, which is value of the last observation
         obs = rbs[-1][-1]
 
@@ -203,6 +214,7 @@ class A3CAgent(object):
         valid_non_spatial_action = np.zeros([len(rbs), len(actions.FUNCTIONS)], dtype=np.float32)
         non_spatial_action_selected = np.zeros([len(rbs), len(actions.FUNCTIONS)], dtype=np.float32)
 
+        # TODO the following data preparing can be very slow
         rbs.reverse()
         for i, [obs, action, next_obs] in enumerate(rbs):
             minimap = np.array(obs.observation['minimap'], dtype=np.float32)
@@ -237,6 +249,12 @@ class A3CAgent(object):
         screens = np.concatenate(screens, axis=0)
         infos = np.concatenate(infos, axis=0)
 
+        # TODO debugging
+        self._update_net(minimaps, screens, infos, value_target, valid_spatial_action, spatial_action_selected,
+                    valid_non_spatial_action, non_spatial_action_selected, lr, cter)
+
+    def _update_net(self, minimaps, screens, infos, value_target, valid_spatial_action, spatial_action_selected,
+                    valid_non_spatial_action, non_spatial_action_selected, lr, cter):
         # ======================================================================
         #                                train
         # ======================================================================
