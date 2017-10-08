@@ -127,12 +127,7 @@ class A3CAgent(object):
         info = np.zeros([1, self.isize], dtype=np.float32)
         info[0, obs.observation['available_actions']] = 1
 
-        feed = {self.minimap: minimap,
-                self.screen: screen,
-                self.info: info}
-
-        non_spatial_action, spatial_action = self.sess.run([self.non_spatial_action, self.spatial_action],
-                                                           feed_dict=feed)
+        non_spatial_action, spatial_action = self._infer(minimap, screen, info)
 
         # Select an action and a spatial target
         non_spatial_action = non_spatial_action.ravel()
@@ -166,6 +161,14 @@ class A3CAgent(object):
                 act_args.append([0])  # TODO: Be careful
 
         return actions.FunctionCall(act_id, act_args)
+
+    # TODO debugging
+    def _infer(self, minimap, screen, info):
+        feed = {self.minimap: minimap,
+                self.screen: screen,
+                self.info: info}
+
+        return self.sess.run([self.non_spatial_action, self.spatial_action],feed_dict=feed)
 
     def update(self, rbs, disc, lr, cter):
         """
@@ -268,9 +271,11 @@ class A3CAgent(object):
                 self.non_spatial_action_selected: non_spatial_action_selected,
                 self.learning_rate: lr}
 
-        _, summary = self.sess.run([self.train_op, self.summary_op], feed_dict=feed)
+        self.sess.run(self.train_op, feed_dict=feed)
 
-        self.summary_writer.add_summary(summary, cter)
+        # TODO disabled summary since it took half of the training time
+        # _, summary = self.sess.run([self.train_op, self.summary_op], feed_dict=feed)
+        # self.summary_writer.add_summary(summary, cter)
 
     def save_model(self, path, count):
         self.saver.save(self.sess, path + '/model.pkl', count)
