@@ -36,10 +36,10 @@ class Model():
             global_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'global')
 
             # Apply local gradients to global network
-            self.get_local_grads_op = opt.compute_gradients(self.loss, local_vars)
+            self.get_local_grads_op = tf.gradients(self.loss, local_vars)
 
             # two main opertation
-            self.update_global_op = opt.apply_gradients(zip(self.get_local_grads_op, global_vars))
+            self.update_global_op = opt.apply_gradients(zip(self.get_local_grads_op, global_vars)) # TODO can be danger
             self.update_local_op = update_target_graph('global', scope)
 
     def work(self, sess):
@@ -49,14 +49,17 @@ class Model():
 
         feed_dict = {self.x:trainx, self.y:trainy}
 
-        while not coord.should_stop():
+        cnt = 0
+        while not coord.should_stop() and cnt < 100:
             # sync
             sess.run(self.update_local_op)
 
-            # print global loss
-            print self.scope, '=====>', sess.run(self.loss, feed_dict)
-
             sess.run(self.update_global_op, feed_dict)
+
+            cnt += 1
+
+        # print global loss
+        print self.scope, '=====>', sess.run(self.loss, feed_dict)
 
 
 
@@ -68,15 +71,16 @@ if __name__ == '__main__':
     config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.allow_growth = True
     num_workers = multiprocessing.cpu_count()
+    num_gpu = 2
+
+    opt = tf.train.AdamOptimizer(learning_rate=1e-2)
 
     with tf.device("/cpu:0"):
-        global_episodes = tf.Variable(0, dtype=tf.int32, name='global_episodes', trainable=False)
-        opt = tf.train.AdamOptimizer(learning_rate=1e-6)
         master_network = Model('global', opt)  # Generate global network
 
-        workers = []
-        # Create worker classes
-        for i in range(num_workers):
+    workers = []
+    for i in range(num_workers):
+        with tf.device("/gpu:%d" % (i % num_gpu)):
             workers.append(Model('worker_%d'%i, opt))
 
     with tf.Session(config=config) as sess:
