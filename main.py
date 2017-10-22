@@ -342,12 +342,9 @@ with tf.device("/cpu:0"):
     trainer = tf.train.AdamOptimizer(learning_rate=1e-4)
     master_network = AC_Network(s_size, a_size, 'global', None)  # Generate global network
 
-
-workers = []
-# Create worker classes
-for i in range(num_workers):
-    # make use of multi-gpu
-    with tf.device('/gpu:%d' % (i % num_gpu)):
+    workers = []
+    # Create worker classes
+    for i in range(num_workers):
         workers.append(Worker(DoomGame(), i, s_size, a_size, trainer, model_path, global_episodes))
 
 saver = tf.train.Saver(max_to_keep=5)
