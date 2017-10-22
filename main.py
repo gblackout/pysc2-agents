@@ -326,6 +326,7 @@ a_size = 3  # Agent can move Left, Right, or Fire
 load_model = False
 model_path = './model'
 num_workers = multiprocessing.cpu_count()  # Set workers ot number of available CPU threads
+num_gpu = 2
 
 tf.reset_default_graph() # TODO ?
 
@@ -345,11 +346,16 @@ with tf.device("/cpu:0"):
 workers = []
 # Create worker classes
 for i in range(num_workers):
-    workers.append(Worker(DoomGame(), i, s_size, a_size, trainer, model_path, global_episodes))
+    # make use of multi-gpu
+    with tf.device('/gpu:%d' % (i % num_gpu)):
+        workers.append(Worker(DoomGame(), i, s_size, a_size, trainer, model_path, global_episodes))
 
 saver = tf.train.Saver(max_to_keep=5)
 
-with tf.Session() as sess:
+config = tf.ConfigProto(allow_soft_placement=True)
+config.gpu_options.allow_growth = True
+
+with tf.Session(config=config) as sess:
     coord = tf.train.Coordinator()
 
     if load_model == True:
