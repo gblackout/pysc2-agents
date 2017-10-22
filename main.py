@@ -1,208 +1,371 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import sys
-import time
-import importlib
 import threading
-from os.path import join as joinpath
-from utils import makedir, get_output_folder
-
-from pysc2 import maps
-from pysc2.env import available_actions_printer
-from pysc2.env import sc2_env
-from pysc2.lib import stopwatch
-from pysc2.lib import app
-import gflags as flags
+import multiprocessing
+import numpy as np
 import tensorflow as tf
-
-from run_loop import run_loop
-
-COUNTER = 0
-LOCK = threading.Lock()
-
-FLAGS = flags.FLAGS
-
-
-# path
-flags.DEFINE_string("output_path", "./out", "Path for snapshot.")
-flags.DEFINE_string("model_load_path", "./out", "Path for loading saved models")
-
-# resources setup
-flags.DEFINE_string("device", "0,1", "Device for training.") # default two GPUs
-flags.DEFINE_integer("parallel", 8, "How many instances to run in parallel.")
-
-# game setup
-flags.DEFINE_string("map", "MoveToBeacon", "Name of a map to use.")
-flags.DEFINE_enum("agent_race", "T", sc2_env.races.keys(), "Agent's race.")
-flags.DEFINE_enum("bot_race", None, sc2_env.races.keys(), "Bot's race.")
-flags.DEFINE_enum("difficulty", None, sc2_env.difficulties.keys(), "Bot's strength.")
-
-flags.DEFINE_integer("screen_resolution", 64, "Resolution for screen feature layers.")
-flags.DEFINE_integer("minimap_resolution", 64, "Resolution for minimap feature layers.")
-flags.DEFINE_integer("step_mul", 8, "Game steps per agent step.")
-
-# model setup
-flags.DEFINE_string("agent", "agents.a3c_agent.A3CAgent", "Which agent to run.")
-flags.DEFINE_string("net", "fcn", "atari or fcn.")
-
-# training setup
-flags.DEFINE_bool("training", True, "Whether to train agents.")
-flags.DEFINE_bool("continuation", False, "Continuously training.")
-flags.DEFINE_float("learning_rate", 5e-4, "Learning rate for training.")
-flags.DEFINE_float("discount", 0.99, "Discount rate for future rewards.")
-flags.DEFINE_integer("max_steps", 1e5, "Total steps for training.") # max episode for all agents
-flags.DEFINE_integer("max_agent_steps", 60, "Total agent steps.") # max step per episode
-flags.DEFINE_integer("snapshot_step", 1e3, "Step for snapshot.") # save snapshot per snapshot_step episode
-flags.DEFINE_integer("max_to_keep", 10, "max snapshot to keep")
-
-# debugging
-flags.DEFINE_bool("profile", False, "Whether to turn on code profiling.")
-flags.DEFINE_bool("trace", False, "Whether to trace the code execution.")
-flags.DEFINE_bool("render", False, "Whether to render with pygame.")
-flags.DEFINE_bool("save_replay", False, "Whether to save a replay at the end.")
-
-FLAGS(sys.argv)
-
-if FLAGS.training:
-    PARALLEL = FLAGS.parallel
-    MAX_AGENT_STEPS = FLAGS.max_agent_steps
-    DEVICE = ['/gpu:' + dev for dev in FLAGS.device.split(',')]
-else:
-    PARALLEL = 1
-    MAX_AGENT_STEPS = 1e5
-    DEVICE = ['/cpu:0']
-
-# setup all pathes
-output_dir = get_output_folder(FLAGS.output_path, '%s-%s' % (FLAGS.map, FLAGS.net))
-LOG = joinpath(output_dir, 'summary')
-SNAPSHOT = joinpath(output_dir, 'checkpoint')
-
-makedir(output_dir)
-makedir(LOG)
-makedir(SNAPSHOT)
+import tensorflow.contrib.slim as slim
+from time import sleep
+import scipy.signal
+import scipy.misc
+from vizdoom import *
+import os
 
 
-def run_thread(agent, map_name, visualize):
+# Copies one set of variables to another.
+def update_target_graph(from_scope, to_scope):
+    from_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, from_scope)
+    to_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, to_scope)
 
-    with sc2_env.SC2Env(
-            map_name=map_name,
-            agent_race=FLAGS.agent_race,
-            bot_race=FLAGS.bot_race,
-            difficulty=FLAGS.difficulty,
-            step_mul=FLAGS.step_mul,
-            screen_size_px=(FLAGS.screen_resolution, FLAGS.screen_resolution),
-            minimap_size_px=(FLAGS.minimap_resolution, FLAGS.minimap_resolution),
-            visualize=visualize) as env:
+    op_holder = []
+    for from_var, to_var in zip(from_vars, to_vars):
+        op_holder.append(to_var.assign(from_var))
+    return op_holder
 
-        env = available_actions_printer.AvailableActionsPrinter(env)
-        replay_buffer = []
 
-        # for each episode
-        for recorder, is_done in run_loop([agent], env, MAX_AGENT_STEPS):
+# Processes Doom screen image to produce cropped and resized image.
+def process_frame(frame):
+    s = frame[10:-10, 30:-30]
+    s = scipy.misc.imresize(s, [84, 84])
+    s = np.reshape(s, [np.prod(s.shape)]) / 255.0
+    return s
 
-            if FLAGS.training:
 
-                replay_buffer.append(recorder)
+# Discounting function used to calculate discounted returns.
+def discount(x, gamma):
+    return scipy.signal.lfilter([1], [1, -gamma], x[::-1], axis=0)[::-1]
 
-                if is_done:
 
-                    counter = 0
-                    with LOCK:
-                        global COUNTER
-                        COUNTER += 1
-                        counter = COUNTER
+# Used to initialize weights for policy and value output layers
+def normalized_columns_initializer(std=1.0):
+    def _initializer(shape, dtype=None, partition_info=None):
+        out = np.random.randn(*shape).astype(np.float32)
+        out *= std / np.sqrt(np.square(out).sum(axis=0, keepdims=True))
+        return tf.constant(out)
 
-                    # Learning rate schedule
-                    learning_rate = FLAGS.learning_rate * (1 - 0.9 * counter / FLAGS.max_steps)
+    return _initializer
 
-                    # update agent
-                    agent.update(replay_buffer, FLAGS.discount, learning_rate, counter)
 
-                    # clear buffer ? why
-                    replay_buffer = []
+class AC_Network():
+    def __init__(self, s_size, a_size, scope, trainer):
+        with tf.variable_scope(scope):
+            # Input and visual encoding layers
+            self.inputs = tf.placeholder(shape=[None, s_size], dtype=tf.float32)
+            self.imageIn = tf.reshape(self.inputs, shape=[-1, 84, 84, 1])
+            self.conv1 = slim.conv2d(activation_fn=tf.nn.elu,
+                                     inputs=self.imageIn, num_outputs=16,
+                                     kernel_size=[8, 8], stride=[4, 4], padding='VALID')
+            self.conv2 = slim.conv2d(activation_fn=tf.nn.elu,
+                                     inputs=self.conv1, num_outputs=32,
+                                     kernel_size=[4, 4], stride=[2, 2], padding='VALID')
+            hidden = slim.fully_connected(slim.flatten(self.conv2), 256, activation_fn=tf.nn.elu)
 
-                    # save model for every snapshot_step
-                    if counter % FLAGS.snapshot_step == 1:
-                        agent.save_model(SNAPSHOT, counter)
+            # Recurrent network for temporal dependencies
+            lstm_cell = tf.contrib.rnn.BasicLSTMCell(256, state_is_tuple=True)
+            c_init = np.zeros((1, lstm_cell.state_size.c), np.float32)
+            h_init = np.zeros((1, lstm_cell.state_size.h), np.float32)
+            self.state_init = [c_init, h_init]
+            c_in = tf.placeholder(tf.float32, [1, lstm_cell.state_size.c])
+            h_in = tf.placeholder(tf.float32, [1, lstm_cell.state_size.h])
+            self.state_in = (c_in, h_in)
+            rnn_in = tf.expand_dims(hidden, [0])
+            step_size = tf.shape(self.imageIn)[:1]
+            state_in = tf.contrib.rnn.LSTMStateTuple(c_in, h_in)
+            lstm_outputs, lstm_state = tf.nn.dynamic_rnn(
+                lstm_cell, rnn_in, initial_state=state_in, sequence_length=step_size,
+                time_major=False)
+            lstm_c, lstm_h = lstm_state
+            self.state_out = (lstm_c[:1, :], lstm_h[:1, :])
+            rnn_out = tf.reshape(lstm_outputs, [-1, 256])
 
-                    # stop if max_steps reached
-                    if counter >= FLAGS.max_steps:
+            # Output layers for policy and value estimations
+            self.policy = slim.fully_connected(rnn_out, a_size,
+                                               activation_fn=tf.nn.softmax,
+                                               weights_initializer=normalized_columns_initializer(0.01),
+                                               biases_initializer=None)
+            self.value = slim.fully_connected(rnn_out, 1,
+                                              activation_fn=None,
+                                              weights_initializer=normalized_columns_initializer(1.0),
+                                              biases_initializer=None)
+
+            # Only the worker network need ops for loss functions and gradient updating.
+            if scope != 'global':
+                self.actions = tf.placeholder(shape=[None], dtype=tf.int32)
+                self.actions_onehot = tf.one_hot(self.actions, a_size, dtype=tf.float32)
+                self.target_v = tf.placeholder(shape=[None], dtype=tf.float32)
+                self.advantages = tf.placeholder(shape=[None], dtype=tf.float32)
+
+                self.responsible_outputs = tf.reduce_sum(self.policy * self.actions_onehot, [1])
+
+                # Loss functions
+                self.value_loss = 0.5 * tf.reduce_sum(tf.square(self.target_v - tf.reshape(self.value, [-1])))
+                self.entropy = - tf.reduce_sum(self.policy * tf.log(self.policy))
+                self.policy_loss = -tf.reduce_sum(tf.log(self.responsible_outputs) * self.advantages)
+                self.loss = 0.5 * self.value_loss + self.policy_loss - self.entropy * 0.01
+
+                # Get gradients from local network using local losses
+                local_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope)
+                self.gradients = tf.gradients(self.loss, local_vars)
+
+                self.var_norms = tf.global_norm(local_vars)
+                grads, self.grad_norms = tf.clip_by_global_norm(self.gradients, 40.0) # TODO tune afterwards
+
+                # Apply local gradients to global network
+                global_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'global')
+                self.apply_grads = trainer.apply_gradients(zip(grads, global_vars))
+
+
+class Worker():
+    def __init__(self, game, name, s_size, a_size, trainer, model_path, global_episodes):
+        self.name = "worker_" + str(name)
+        self.number = name
+        self.model_path = model_path
+        self.trainer = trainer
+        self.global_episodes = global_episodes
+        self.increment = self.global_episodes.assign_add(1)
+        self.episode_rewards = []
+        self.episode_lengths = []
+        self.episode_mean_values = []
+        self.summary_writer = tf.summary.FileWriter("train_" + str(self.number))
+
+        # Create local copy
+        self.local_AC = AC_Network(s_size, a_size, self.name, trainer)
+        # tf op to copy from global parameters
+        self.update_local_ops = update_target_graph('global', self.name)
+
+        # The Below code is related to setting up the Doom environment
+        game.set_doom_scenario_path("basic.wad")  # TODO This corresponds to the simple task we will pose our agent
+        game.set_doom_map("map01")
+        game.set_screen_resolution(ScreenResolution.RES_160X120)
+        game.set_screen_format(ScreenFormat.GRAY8)
+        game.set_render_hud(False)
+        game.set_render_crosshair(False)
+        game.set_render_weapon(True)
+        game.set_render_decals(False)
+        game.set_render_particles(False)
+        game.add_available_button(Button.MOVE_LEFT)
+        game.add_available_button(Button.MOVE_RIGHT)
+        game.add_available_button(Button.ATTACK)
+        game.add_available_game_variable(GameVariable.AMMO2)
+        game.add_available_game_variable(GameVariable.POSITION_X)
+        game.add_available_game_variable(GameVariable.POSITION_Y)
+        game.set_episode_timeout(300)
+        game.set_episode_start_time(10)
+        game.set_window_visible(False)
+        game.set_sound_enabled(False)
+        game.set_living_reward(-1)
+        game.set_mode(Mode.PLAYER)
+        game.init()
+
+        self.actions = self.actions = np.identity(a_size, dtype=bool).tolist() # TODO ???
+        # End Doom set-up
+        self.env = game
+
+    def train(self, rollout, sess, gamma, bootstrap_value):
+        rollout = np.array(rollout)
+        observations = rollout[:, 0]
+        actions = rollout[:, 1]
+        rewards = rollout[:, 2]
+        next_observations = rollout[:, 3]
+        values = rollout[:, 5]
+
+        # Here we take the rewards and values from the rollout, and use them to
+        # generate the advantage and discounted returns.
+        # The advantage function uses "Generalized Advantage Estimation"
+        self.rewards_plus = np.asarray(rewards.tolist() + [bootstrap_value])
+        discounted_rewards = discount(self.rewards_plus, gamma)[:-1]
+        self.value_plus = np.asarray(values.tolist() + [bootstrap_value])
+        advantages = rewards + gamma * self.value_plus[1:] - self.value_plus[:-1]
+        advantages = discount(advantages, gamma)
+
+        # Update the global network using gradients from loss
+        # Generate network statistics to periodically save
+        feed_dict = {self.local_AC.target_v: discounted_rewards,
+                     self.local_AC.inputs: np.vstack(observations),
+                     self.local_AC.actions: actions,
+                     self.local_AC.advantages: advantages,
+                     self.local_AC.state_in[0]: self.batch_rnn_state[0],
+                     self.local_AC.state_in[1]: self.batch_rnn_state[1]}
+
+        v_l, p_l, e_l, g_n, v_n, self.batch_rnn_state, _ = sess.run([self.local_AC.value_loss,
+                                                                     self.local_AC.policy_loss,
+                                                                     self.local_AC.entropy,
+                                                                     self.local_AC.grad_norms,
+                                                                     self.local_AC.var_norms,
+                                                                     self.local_AC.state_out,
+                                                                     self.local_AC.apply_grads],
+                                                                    feed_dict=feed_dict)
+
+        return v_l / len(rollout), p_l / len(rollout), e_l / len(rollout), g_n, v_n
+
+    def work(self, max_episode_length, gamma, sess, coord, saver):
+
+        episode_count = sess.run(self.global_episodes)
+        total_steps = 0
+        print ("Starting worker " + str(self.number))
+
+        with sess.as_default(), sess.graph.as_default():
+            while not coord.should_stop():
+
+                # sync
+                sess.run(self.update_local_ops)
+
+                episode_buffer = []
+                episode_values = []
+                episode_frames = []
+                episode_reward = 0
+                episode_step_count = 0
+                d = False
+
+                self.env.new_episode()
+                s = self.env.get_state().screen_buffer
+                episode_frames.append(s)
+                s = process_frame(s)
+                rnn_state = self.local_AC.state_init
+                self.batch_rnn_state = rnn_state
+
+                while self.env.is_episode_finished() is False:
+
+                    # Take an action using probabilities from policy network output.
+                    a_dist, v, rnn_state = sess.run(
+                        [self.local_AC.policy, self.local_AC.value, self.local_AC.state_out],
+                        feed_dict={self.local_AC.inputs: [s],
+                                   self.local_AC.state_in[0]: rnn_state[0],
+                                   self.local_AC.state_in[1]: rnn_state[1]})
+
+                    a = np.random.choice(a_dist[0], p=a_dist[0])
+                    a = np.argmax(a_dist == a)
+
+                    r = self.env.make_action(self.actions[a]) / 100.0
+                    d = self.env.is_episode_finished()
+
+                    if d is False:
+                        s1 = self.env.get_state().screen_buffer
+                        episode_frames.append(s1)
+                        s1 = process_frame(s1)
+
+                    else:
+                        s1 = s
+
+                    episode_buffer.append([s, a, r, s1, d, v[0, 0]])
+                    episode_values.append(v[0, 0])
+
+                    episode_reward += r
+                    s = s1
+                    total_steps += 1
+                    episode_step_count += 1
+
+                    # If the episode hasn't ended, but the experience buffer is full, then we
+                    # make an update step using that experience rollout.
+                    # TODO buffer size tune
+                    if len(episode_buffer) == 30 and d is False and episode_step_count != max_episode_length - 1:
+
+                        # Since we don't know what the true final return is, we "bootstrap" from our current
+                        # value estimation.
+                        v1 = sess.run(self.local_AC.value,
+                                      feed_dict={self.local_AC.inputs: [s],
+                                                 self.local_AC.state_in[0]: rnn_state[0],
+                                                 self.local_AC.state_in[1]: rnn_state[1]})[0, 0]
+
+                        v_l, p_l, e_l, g_n, v_n = self.train(episode_buffer, sess, gamma, v1)
+
+                        # empty buffer
+                        episode_buffer = []
+                        # sync after update
+                        sess.run(self.update_local_ops)
+
+                    if d is True:
                         break
 
-            elif is_done:
-                obs = recorder[-1].observation
-                score = obs["score_cumulative"][0]
-                print('Your score is ' + str(score) + '!')
+                self.episode_rewards.append(episode_reward)
+                self.episode_lengths.append(episode_step_count)
+                self.episode_mean_values.append(np.mean(episode_values))
 
-        if FLAGS.save_replay:
-            env.save_replay(agent.name)
+                # TODO Update the network if buffer not empty
+                if len(episode_buffer) != 0:
+                    v_l, p_l, e_l, g_n, v_n = self.train(episode_buffer, sess, gamma, 0.0)
+
+                # Periodically save gifs of episodes, model parameters, and summary statistics.
+                # TODO log freq tune
+                if episode_count % 5 == 0 and episode_count != 0:
+
+                    if self.name == 'worker_0' and episode_count % 25 == 0:
+                        time_per_step = 0.05
+                        images = np.array(episode_frames)
+                        # make_gif(images, './frames/image' + str(episode_count) + '.gif',
+                        #          duration=len(images) * time_per_step, true_image=True, salience=False)
+
+                    if episode_count % 250 == 0 and self.name == 'worker_0':
+                        saver.save(sess, self.model_path + '/model-' + str(episode_count) + '.cptk')
+                        print ("Saved Model")
+
+                    mean_reward = np.mean(self.episode_rewards[-5:])
+                    mean_length = np.mean(self.episode_lengths[-5:])
+                    mean_value = np.mean(self.episode_mean_values[-5:])
+                    summary = tf.Summary()
+                    summary.value.add(tag='Perf/Reward', simple_value=float(mean_reward))
+                    summary.value.add(tag='Perf/Length', simple_value=float(mean_length))
+                    summary.value.add(tag='Perf/Value', simple_value=float(mean_value))
+                    summary.value.add(tag='Losses/Value Loss', simple_value=float(v_l))
+                    summary.value.add(tag='Losses/Policy Loss', simple_value=float(p_l))
+                    summary.value.add(tag='Losses/Entropy', simple_value=float(e_l))
+                    summary.value.add(tag='Losses/Grad Norm', simple_value=float(g_n))
+                    summary.value.add(tag='Losses/Var Norm', simple_value=float(v_n))
+                    self.summary_writer.add_summary(summary, episode_count)
+
+                    self.summary_writer.flush()
+
+                if self.name == 'worker_0':
+                    sess.run(self.increment)
+
+                episode_count += 1
 
 
-def _main(unused_argv):
-    """
-        Run agents
-    """
+max_episode_length = 300
+gamma = .99  # discount rate for advantage estimation and reward discounting
+s_size = 7056  # Observations are greyscale frames of 84 * 84 * 1
+a_size = 3  # Agent can move Left, Right, or Fire
+load_model = False
+model_path = './model'
+num_workers = multiprocessing.cpu_count()  # Set workers ot number of available CPU threads
 
-    # ======================================================================
-    #                                config
-    # ======================================================================
+tf.reset_default_graph() # TODO ?
 
-    # sw
-    stopwatch.sw.enabled = FLAGS.profile or FLAGS.trace
-    stopwatch.sw.trace = FLAGS.trace
+if not os.path.exists(model_path):
+    os.makedirs(model_path)
 
-    # Assert the map exists.
-    maps.get(FLAGS.map)
+# Create a directory to save episode playback gifs to
+if not os.path.exists('./frames'):
+    os.makedirs('./frames')
 
-    # Setup agents
-    agent_module, agent_name = FLAGS.agent.rsplit(".", 1)
-    agent_cls = getattr(importlib.import_module(agent_module), agent_name)
+with tf.device("/cpu:0"):
+    global_episodes = tf.Variable(0, dtype=tf.int32, name='global_episodes', trainable=False)
+    trainer = tf.train.AdamOptimizer(learning_rate=1e-4)
+    master_network = AC_Network(s_size, a_size, 'global', None)  # Generate global network
 
-    agents = []
-    # init agents
-    for i in range(PARALLEL):
-        agent = agent_cls(FLAGS.training, FLAGS.minimap_resolution, FLAGS.screen_resolution)
-        # TODO why assigning to different device?
-        agent.build_model(i > 0, DEVICE[i % len(DEVICE)], FLAGS.net, FLAGS.max_to_keep)
-        agents.append(agent)
 
-    config = tf.ConfigProto(allow_soft_placement=True)
-    config.gpu_options.allow_growth = True
+workers = []
+# Create worker classes
+for i in range(num_workers):
+    workers.append(Worker(DoomGame(), i, s_size, a_size, trainer, model_path, global_episodes))
 
-    # ======================================================================
-    #                                training
-    # ======================================================================
-    sess = tf.Session(config=config)
+saver = tf.train.Saver(max_to_keep=5)
 
-    summary_writer = tf.summary.FileWriter(LOG)
-    for i in range(PARALLEL):
-        agents[i].setup(sess, summary_writer)
+with tf.Session() as sess:
+    coord = tf.train.Coordinator()
 
-    agent.initialize()
-    if not FLAGS.training or FLAGS.continuation:
-        global COUNTER
-        COUNTER = agent.load_model(SNAPSHOT)
+    if load_model == True:
+        print ('Loading Model...')
+        ckpt = tf.train.get_checkpoint_state(model_path)
+        saver.restore(sess, ckpt.model_checkpoint_path)
 
-    # Run threads
-    threads = []
-    for i in range(PARALLEL - 1):
-        t = threading.Thread(target=run_thread, args=(agents[i], FLAGS.map, False))
-        threads.append(t)
-        t.daemon = True
+    else:
+        sess.run(tf.global_variables_initializer())
+
+    worker_threads = []
+    for worker in workers:
+        worker_work = lambda: worker.work(max_episode_length, gamma, sess, coord, saver)
+        t = threading.Thread(target=(worker_work))
         t.start()
-        time.sleep(5)
+        sleep(0.5)
+        worker_threads.append(t)
 
-    # last one used to render ?
-    run_thread(agents[-1], FLAGS.map, FLAGS.render)
-
-    for t in threads:
-        t.join()
-
-    if FLAGS.profile:
-        print(stopwatch.sw)
-
-
-if __name__ == "__main__":
-    app.really_start(_main)
+    coord.join(worker_threads)
