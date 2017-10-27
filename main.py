@@ -4,10 +4,11 @@ import tensorflow as tf
 from time import sleep
 from optparse import OptionParser
 from worker import Worker
+from env.atari import AtariEnv
 
 
 def init_env():
-    return None # TODO change here for different env
+    return AtariEnv()
 
 
 def get_session(options):
@@ -80,6 +81,10 @@ if __name__ == '__main__':
     parser.add_option('--allow_growth', dest='allow_growth', action='store_true')
     parser.add_option('--no_allow_growth', dest='allow_growth', action='store_false')
     parser.set_defaults(allow_growth=True)
+
+    parser.add_option('clip_norm', dest='clip_norm', type='float', default=40.0)
+    parser.add_option('entropy_coef', dest='entropy_coef', type='float', default=0.01)
+
 
     FLAGS, _ = parser.parse_args()
 
