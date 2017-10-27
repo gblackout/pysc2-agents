@@ -16,7 +16,7 @@ class AtariEnv:
 
         next_state, reward, done, info = self.env.step(*args, **kwargs)
 
-        self._update_buf(sess, next_state)
+        self._update_buf(next_state, sess)
 
         reward = max(min(reward, 1), -1)
 
@@ -27,7 +27,7 @@ class AtariEnv:
         self._update_buf(state, sess, init=True)
         return np.copy(self._state_buf)
 
-    def _update_buf(self, sess, state, init=False):
+    def _update_buf(self, state, sess, init=False):
         buf = sess.run(self.state_process_op, {self.input_state: state})
 
         if init:
