@@ -124,14 +124,14 @@ class Worker:
             episode_steps += 1
 
             if curr_buf_ind == self.batch_size:
-                states_buf[curr_buf_ind + 1] = curr_state  # put in final state
+                states_buf[curr_buf_ind] = curr_state  # put in final state
                 yield done, curr_buf_ind
                 curr_buf_ind = 0
 
         self.recorder.add_record(episode_reward, episode_steps, self.episode_cnt)
 
         if curr_buf_ind > 0:
-            states_buf[curr_buf_ind + 1] = curr_state  # put in final state
+            states_buf[curr_buf_ind] = curr_state  # put in final state
             yield done, curr_buf_ind
 
     def predict_action_prob(self, state, sess):
