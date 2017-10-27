@@ -29,7 +29,7 @@ class Worker:
         self.episode_cnt = 0
 
         with tf.variable_scope(scope):
-            self.model = AtariFCN(options.entropy_coef)
+            self.model = AtariFCN(options.entropy_coef, len(self.env.action_space))
 
             # Get gradients from local network using local losses
             self.local_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope)

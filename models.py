@@ -17,7 +17,7 @@ class Network:
 
 
 class AtariFCN:
-    def __init__(self, entropy_coef, a_size=3):
+    def __init__(self, entropy_coef, a_size):
 
         self.image_size = [84, 84, 4]
 
