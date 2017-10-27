@@ -4,6 +4,7 @@ import numpy as np
 from utils import update_target_graph
 from env.atari import AtariEnv
 
+
 class Worker:
     def __init__(self, scope, opt, env, coord, global_vars, options):
         """
@@ -24,9 +25,11 @@ class Worker:
         self.batch_size = options.batch_size
         self.coord = coord
         self.discount_factor = options.discount_factor
+        self.recorder = RewardMointor(scope)
+        self.episode_cnt = 0
 
         with tf.variable_scope(scope):
-            self.model = AtariFCN(options.entropy_coef) # TODO modify input
+            self.model = AtariFCN(options.entropy_coef)
 
             # Get gradients from local network using local losses
             self.local_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope)
@@ -49,42 +52,40 @@ class Worker:
 
         # creating batch buf and reuse them to avoid re-allocating mem
         # NHWC, +1 for saving the last state with no reward and action
-        states_buf = np.zeros([self.batch_size+1]+self.model.image_size, dtype=np.float32)
+        states_buf = np.zeros([self.batch_size + 1] + self.model.image_size, dtype=np.float32)
         action_buf = np.zeros(self.batch_size, dtype=np.int32)
         reward_buf = np.zeros(self.batch_size, dtype=np.float32)
 
-        episode_cnt = 0
-        while not (self.coord.should_stop() and episode_cnt < self.max_episode):
+        while not (self.coord.should_stop() and self.episode_cnt < self.max_episode):
 
             for done, buf_ind in self.run_episode(states_buf, action_buf, reward_buf, sess):
-
-                self.update(states_buf[:buf_ind+1] if done else states_buf,
+                self.update(states_buf[:buf_ind + 1] if done else states_buf,
                             action_buf[:buf_ind] if done else action_buf,
                             reward_buf[:buf_ind] if done else reward_buf,
                             done, sess)
 
-            episode_cnt += 1
+            self.episode_cnt += 1
 
     def update(self, states_buf, action_buf, reward_buf, done, sess):
 
-        cumu_reward_buf = np.zeros(states_buf.shape[0], dtype=np.float32) # batch_size + 1
+        cumu_reward_buf = np.zeros(states_buf.shape[0], dtype=np.float32)  # batch_size + 1
         state_vals = self.predict_value(states_buf, sess)
 
         if not done:
             cumu_reward_buf[-1] = state_vals[-1]
 
         # TODO can do without for loop
-        for i in range(cumu_reward_buf.shape[0]-1)[::-1]: # batch_size
-            cumu_reward_buf[i] = reward_buf[i] + cumu_reward_buf[i+1] * self.discount_factor
+        for i in range(cumu_reward_buf.shape[0] - 1)[::-1]:  # batch_size
+            cumu_reward_buf[i] = reward_buf[i] + cumu_reward_buf[i + 1] * self.discount_factor
 
         advantage_buf = cumu_reward_buf[:-1] - state_vals[:-1]
 
         feed_dict = {
-                     self.model.target_v: cumu_reward_buf[:-1],
-                     self.model.inputs: states_buf[:-1],
-                     self.model.actions: action_buf,
-                     self.model.advantages: advantage_buf,
-                     }
+            self.model.target_v: cumu_reward_buf[:-1],
+            self.model.inputs: states_buf[:-1],
+            self.model.actions: action_buf,
+            self.model.advantages: advantage_buf,
+        }
 
         # update global with local gradient
         _ = sess.run([self.update_global_op], feed_dict=feed_dict)
@@ -103,6 +104,9 @@ class Worker:
         done = False
         curr_buf_ind = 0
 
+        episode_reward = 0.0
+        episode_steps = 0
+
         while not done:
 
             act_probs = self.predict_action_prob(curr_state, sess)
@@ -116,10 +120,15 @@ class Worker:
             curr_buf_ind += 1
             curr_state = next_state
 
+            episode_reward += reward
+            episode_steps += 1
+
             if curr_buf_ind == self.batch_size:
-                states_buf[curr_buf_ind + 1] = curr_state # put in final state
+                states_buf[curr_buf_ind + 1] = curr_state  # put in final state
                 yield done, curr_buf_ind
                 curr_buf_ind = 0
+
+        self.recorder.add_record(episode_reward, episode_steps, self.episode_cnt)
 
         if curr_buf_ind > 0:
             states_buf[curr_buf_ind + 1] = curr_state  # put in final state
@@ -135,3 +144,24 @@ class Worker:
 
     def predict_value_single(self, sess, state):
         return self.predict_value(sess, [state])[0]
+
+
+# TODO ad-hoc
+class RewardMointor:
+    def __init__(self, name, log_freq=5):
+        self.summary_writer = tf.summary.FileWriter(name)
+        self.episode_reward_ls = []
+        self.episode_length_ls = []
+        self.log_freq = log_freq
+
+    def add_record(self, episode_reward, episode_length, episode_count):
+        self.episode_length_ls.append(episode_length)
+        self.episode_reward_ls.append(episode_reward)
+
+        if len(self.episode_reward_ls) == self.log_freq:
+            summary = tf.Summary()
+            summary.value.add(tag='Perf/Reward', simple_value=float(np.mean(self.episode_reward_ls)))
+            summary.value.add(tag='Perf/Length', simple_value=float(np.mean(self.episode_length_ls)))
+            self.summary_writer.add_summary(summary, episode_count)
+            self.episode_reward_ls = []
+            self.episode_length_ls = []

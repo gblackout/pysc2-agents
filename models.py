@@ -21,7 +21,7 @@ class AtariFCN:
 
         self.image_size = [84, 84, 4]
 
-        # NHWC
+        # NHWC: n float tensor; where each c in C is the grayscale frame with height H and width W
         self.inputs = tf.placeholder(shape=[None] + self.image_size, dtype=tf.float32)
         self.actions = tf.placeholder(shape=[None], dtype=tf.int32)
         self.target_v = tf.placeholder(shape=[None], dtype=tf.float32)
