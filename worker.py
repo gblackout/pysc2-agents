@@ -100,7 +100,7 @@ class Worker:
         when episode ends before buf is full
         
         """
-        curr_state = self.env.reset()
+        curr_state = self.env.reset(sess)
         done = False
         curr_buf_ind = 0
 
