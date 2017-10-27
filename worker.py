@@ -139,8 +139,13 @@ class Worker:
         return res[0]
 
     def predict_value(self, state, sess):
+        """
+         
+        :return:
+            (batch_size, ) value vector
+        """
         res = sess.run(self.model.value, {self.model.inputs: state})
-        return res
+        return np.squeeze(res)
 
     def predict_value_single(self, state, sess):
         return self.predict_value([state], sess)[0]
