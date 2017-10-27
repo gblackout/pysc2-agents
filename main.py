@@ -87,6 +87,7 @@ if __name__ == '__main__':
     parser.set_defaults(allow_growth=True)
 
     parser.add_option('--clip_norm', dest='clip_norm', type='float', default=5.0)
+    parser.add_option('--discount_factor', dest='discount_factor', type='float', default=0.99)
     parser.add_option('--entropy_coef', dest='entropy_coef', type='float', default=0.01)
 
     FLAGS, _ = parser.parse_args()
