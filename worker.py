@@ -134,16 +134,16 @@ class Worker:
             states_buf[curr_buf_ind + 1] = curr_state  # put in final state
             yield done, curr_buf_ind
 
-    def predict_action_prob(self, sess, state):
+    def predict_action_prob(self, state, sess):
         res = sess.run(self.model.policy, {self.model.inputs: [state]})
         return res[0]
 
-    def predict_value(self, sess, state):
+    def predict_value(self, state, sess):
         res = sess.run(self.model.value, {self.model.inputs: state})
         return res
 
-    def predict_value_single(self, sess, state):
-        return self.predict_value(sess, [state])[0]
+    def predict_value_single(self, state, sess):
+        return self.predict_value([state], sess)[0]
 
 
 # TODO ad-hoc
