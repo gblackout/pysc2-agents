@@ -19,10 +19,10 @@ class Network:
 class AtariFCN:
     def __init__(self, entropy_coef, a_size):
 
-        self.image_size = [84, 84, 4]
+        self.image_size = [4, 84, 84]
 
         with tf.name_scope('input'):
-            # NHWC: n float tensor; where each c in C is the grayscale frame with height H and width W
+            # NCHW: n float tensor; where each c in C is the grayscale frame with height H and width W
             self.inputs = tf.placeholder(shape=[None] + self.image_size, dtype=tf.float32, name='state')
             self.actions = tf.placeholder(shape=[None], dtype=tf.int32, name='action')
             self.target_v = tf.placeholder(shape=[None], dtype=tf.float32, name='target_value')

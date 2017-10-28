@@ -56,7 +56,7 @@ class Worker:
         action_buf = np.zeros(self.batch_size, dtype=np.int32)
         reward_buf = np.zeros(self.batch_size, dtype=np.float32)
 
-        while not (self.coord.should_stop() and self.episode_cnt < self.max_episode):
+        while not (self.coord.should_stop() or self.episode_cnt >= self.max_episode):
 
             for done, buf_ind in self.run_episode(states_buf, action_buf, reward_buf, sess):
                 self.update(states_buf[:buf_ind + 1] if done else states_buf,
