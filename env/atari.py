@@ -41,14 +41,14 @@ class AtariEnv:
         :return:
             1-84-84 float grayscale matrix
         """
-        with tf.device("/cpu:0"):
-            with tf.variable_scope("state_preprocess"):
-                self.input_state = tf.placeholder(shape=[210, 160, 3], dtype=tf.uint8)
-                output = tf.image.rgb_to_grayscale(self.input_state)
-                output = tf.image.crop_to_bounding_box(output, 34, 0, 160, 160)
-                output = tf.image.resize_images(output, [84, 84], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
-                output = tf.to_float(output) / 255.0
-                output = tf.transpose(output, perm=[2, 1, 0])
+
+        with tf.variable_scope("state_preprocess"):
+            self.input_state = tf.placeholder(shape=[210, 160, 3], dtype=tf.uint8)
+            output = tf.image.rgb_to_grayscale(self.input_state)
+            output = tf.image.crop_to_bounding_box(output, 34, 0, 160, 160)
+            output = tf.image.resize_images(output, [84, 84], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+            output = tf.to_float(output) / 255.0
+            output = tf.transpose(output, perm=[2, 1, 0])
 
         return output
 

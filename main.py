@@ -58,7 +58,6 @@ def main(options):
             worker_work = lambda: worker.work(sess)
             t = threading.Thread(target=(worker_work))
             t.start()
-            sleep(0.5)
             worker_threads.append(t)
 
         coord.join(worker_threads)
