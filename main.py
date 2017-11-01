@@ -22,7 +22,6 @@ def main(options):
     num_workers = min(options.num_workers, multiprocessing.cpu_count())
     global_scope = 'global'
 
-    # TODO not sure which one works
     # opt = tf.train.AdamOptimizer(learning_rate=1e-2)
     opt = tf.train.RMSPropOptimizer(learning_rate=0.00025, decay=0.99, momentum=0.0, epsilon=1e-6)
 
@@ -48,7 +47,7 @@ def main(options):
                                   global_vars=master_network.local_vars,
                                   options=options))
 
-    # run threads
+    # I stick to thread, since numpy/tensorflow release GIL most of the time
     with get_session(options) as sess:
 
         sess.run(tf.global_variables_initializer())
